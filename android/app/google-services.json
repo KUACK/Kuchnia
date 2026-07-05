@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "822814623147",
+    "project_id": "kuchnia-b1e17",
+    "storage_bucket": "kuchnia-b1e17.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:822814623147:android:b186bad74bb2e08104beee",
+        "android_client_info": {
+          "package_name": "com.example.kuchnia"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAzYPFySu4Vl4KeUgQk0AmiBJsnR1HELmA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
