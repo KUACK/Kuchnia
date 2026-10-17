@@ -5,8 +5,13 @@ import 'add_product_screen.dart';
 
 class PantryScreen extends StatefulWidget {
   final String householdId;
+  final bool onlyExpired;
 
-  const PantryScreen({super.key, required this.householdId});
+  const PantryScreen({
+    super.key,
+    required this.householdId,
+    this.onlyExpired = false,
+  });
 
   @override
   State<PantryScreen> createState() => _PantryScreenState();
@@ -171,7 +176,9 @@ class _PantryScreenState extends State<PantryScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Spiżarnia')),
+      appBar: AppBar(
+        title: Text(widget.onlyExpired ? 'Produkty po terminie' : 'Spiżarnia'),
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _openAddProduct,
         icon: const Icon(Icons.add),
@@ -202,7 +209,18 @@ class _PantryScreenState extends State<PantryScreen> {
           }
 
           final products = snapshot.data!.docs.where((document) {
-            return document.data()['status'] == 'active';
+            final data = document.data();
+
+            if (data['status'] != 'active') {
+              return false;
+            }
+
+            if (!widget.onlyExpired) {
+              return true;
+            }
+
+            final date = _expirationDate(data);
+            return date != null && _daysUntil(date) < 0;
           }).toList();
 
           // Najbliższy termin na początku, brak terminu na końcu.
@@ -218,7 +236,7 @@ class _PantryScreenState extends State<PantryScreen> {
           });
 
           if (products.isEmpty) {
-            return const Center(
+            return Center(
               child: Padding(
                 padding: EdgeInsets.all(24),
                 child: Column(
@@ -227,13 +245,16 @@ class _PantryScreenState extends State<PantryScreen> {
                     Icon(Icons.kitchen_outlined, size: 72, color: Colors.grey),
                     SizedBox(height: 16),
                     Text(
-                      'Twoja spiżarnia jest jeszcze pusta.',
+                      widget.onlyExpired
+                          ? 'Nie masz produktów po zapisanym terminie.'
+                          : 'Twoja spiżarnia jest jeszcze pusta.',
                       textAlign: TextAlign.center,
                     ),
-                    SizedBox(height: 8),
+                    const SizedBox(height: 8),
                     Text(
-                      'Kliknij „Dodaj produkt”, aby zapisać '
-                      'pierwszy produkt.',
+                      widget.onlyExpired
+                          ? 'W tym widoku pokazujemy tylko produkty po terminie.'
+                          : 'Kliknij „Dodaj produkt”, aby zapisać pierwszy produkt.',
                       textAlign: TextAlign.center,
                     ),
                   ],

@@ -1,5 +1,8 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import '../models/food_item.dart';
+
 import 'add_product_screen.dart';
 import 'pantry_screen.dart';
 
@@ -13,7 +16,47 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _currentIndex = 0;
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _productsStream;
+  Timer? _dateTimer;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _productsStream = FirebaseFirestore.instance
+        .collection('households')
+        .doc(widget.householdId)
+        .collection('pantry_items')
+        .snapshots();
+
+    _dateTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _dateTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _openPantry({bool onlyExpired = false}) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => PantryScreen(
+          householdId: widget.householdId,
+          onlyExpired: onlyExpired,
+        ),
+      ),
+    );
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
   Future<void> _openAddProduct() async {
     final saved = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
@@ -28,41 +71,20 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _openPantry() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => PantryScreen(householdId: widget.householdId),
-      ),
+  void _showComingSoon() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Ta funkcja będzie dostępna później.')),
     );
-
-    if (!mounted) return;
-
-    setState(() {
-      _currentIndex = 0;
-    });
   }
 
-  // Przykładowe dane — później podepniemy prawdziwą bazę
-  final List<FoodItem> _expiringItems = const [
-    FoodItem(
-      name: 'Jajka',
-      quantity: '10 szt.',
-      expiryDate: '23.10',
-      status: ExpiryStatus.critical,
-    ),
-    FoodItem(
-      name: 'Mleko',
-      quantity: '1 L',
-      expiryDate: '25.10',
-      status: ExpiryStatus.warning,
-    ),
-    FoodItem(
-      name: 'Szynka',
-      quantity: '100 g',
-      expiryDate: '28.10',
-      status: ExpiryStatus.ok,
-    ),
-  ];
+  int _daysUntil(DateTime date) {
+    final now = DateTime.now();
+
+    final today = DateTime.utc(now.year, now.month, now.day);
+    final expiry = DateTime.utc(date.year, date.month, date.day);
+
+    return expiry.difference(today).inDays;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -74,49 +96,103 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         actions: [
           IconButton(
+            tooltip: 'Powiadomienia — w przygotowaniu',
             icon: const Icon(Icons.notifications_outlined),
-            onPressed: () {},
+            onPressed: _showComingSoon,
           ),
-          IconButton(icon: const Icon(Icons.person_outline), onPressed: () {}),
+          IconButton(
+            tooltip: 'Profil — w przygotowaniu',
+            icon: const Icon(Icons.person_outline),
+            onPressed: _showComingSoon,
+          ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildStatsRow(),
-            const SizedBox(height: 16),
-            _buildQuickActions(),
-            const SizedBox(height: 16),
-            _buildExpiringSection(),
-            const SizedBox(height: 16),
-            _buildPantryTile(),
-            const SizedBox(height: 16),
-            _buildBottomButtons(),
-          ],
-        ),
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: _productsStream,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            final error = snapshot.error;
+            final code = error is FirebaseException ? error.code : 'nieznany';
+
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Nie udało się odczytać produktów.\n\n'
+                  'Sprawdź internet i reguły Firestore.\n'
+                  'Kod błędu: $code',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            );
+          }
+
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final products = snapshot.data!.docs
+              .where((document) {
+                return document.data()['status'] == 'active';
+              })
+              .map((document) {
+                return _HomeProduct.fromMap(document.data());
+              })
+              .toList();
+
+          final expiring = products.where((product) {
+            final date = product.expirationDate;
+
+            if (date == null) return false;
+
+            final days = _daysUntil(date);
+            return days >= 0 && days <= 3;
+          }).toList();
+
+          final expired = products.where((product) {
+            final date = product.expirationDate;
+
+            return date != null && _daysUntil(date) < 0;
+          }).toList();
+
+          expiring.sort(
+            (a, b) => a.expirationDate!.compareTo(b.expirationDate!),
+          );
+
+          return SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _buildStatsRow(
+                    total: products.length,
+                    expiring: expiring.length,
+                    expired: expired.length,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildQuickActions(),
+                  const SizedBox(height: 12),
+                  Expanded(child: _buildExpiringPreview(expiring)),
+                  const SizedBox(height: 12),
+                  _buildPantryTile(),
+                  const SizedBox(height: 8),
+                  _buildBottomButtons(),
+                ],
+              ),
+            ),
+          );
+        },
       ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _currentIndex,
+        selectedIndex: 0,
         onDestinationSelected: (index) {
           if (index == 1) {
             _openPantry();
-            return;
+          } else if (index != 0) {
+            _showComingSoon();
           }
-
-          if (index == 0) {
-            setState(() {
-              _currentIndex = 0;
-            });
-            return;
-          }
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Ta funkcja będzie dostępna później.'),
-            ),
-          );
         },
         destinations: const [
           NavigationDestination(
@@ -131,12 +207,10 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           NavigationDestination(
             icon: Icon(Icons.shopping_cart_outlined),
-            selectedIcon: Icon(Icons.shopping_cart),
             label: 'Lista zakupów',
           ),
           NavigationDestination(
             icon: Icon(Icons.menu_book_outlined),
-            selectedIcon: Icon(Icons.menu_book),
             label: 'Przepisy',
           ),
         ],
@@ -144,57 +218,74 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildStatsRow() {
+  Widget _buildStatsRow({
+    required int total,
+    required int expiring,
+    required int expired,
+  }) {
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildStatCard('6', 'blisko terminu', Icons.access_time, Colors.orange),
-        const SizedBox(width: 12),
         _buildStatCard(
-          '158 zł',
-          'zaoszczędzone',
-          Icons.savings_outlined,
-          Colors.green,
+          value: '$expiring',
+          label: 'blisko terminu',
+          icon: Icons.access_time,
+          color: Colors.orange,
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 8),
         _buildStatCard(
-          '2,4 kg',
-          'jedzenia uratowane',
-          Icons.eco_outlined,
-          Colors.green,
+          value: '$total',
+          label: 'w spiżarni',
+          icon: Icons.inventory_2_outlined,
+          color: Theme.of(context).colorScheme.primary,
+          onTap: () => _openPantry(),
+        ),
+        const SizedBox(width: 8),
+        _buildStatCard(
+          value: '$expired',
+          label: 'po terminie',
+          icon: Icons.warning_amber_rounded,
+          color: Colors.red,
+          onTap: () => _openPantry(onlyExpired: true),
         ),
       ],
     );
   }
 
-  Widget _buildStatCard(
-    String value,
-    String label,
-    IconData icon,
-    Color color,
-  ) {
+  Widget _buildStatCard({
+    required String value,
+    required String label,
+    required IconData icon,
+    required Color color,
+    VoidCallback? onTap,
+  }) {
     return Expanded(
       child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            children: [
-              Text(
-                value,
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: color,
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+            child: Column(
+              children: [
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: color,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                label,
-                style: const TextStyle(fontSize: 11),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 4),
-              Icon(icon, size: 18, color: color),
-            ],
+                const SizedBox(height: 4),
+                Text(
+                  label,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 12),
+                ),
+                const SizedBox(height: 8),
+                Icon(icon, color: color, size: 20),
+              ],
+            ),
           ),
         ),
       ),
@@ -205,55 +296,25 @@ class _HomeScreenState extends State<HomeScreen> {
     return Row(
       children: [
         Expanded(
-          child: Card(
-            child: InkWell(
-              onTap: () {},
-              borderRadius: BorderRadius.circular(12),
-              child: const Padding(
-                padding: EdgeInsets.symmetric(vertical: 20),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.restaurant_menu_outlined),
-                    SizedBox(width: 8),
-                    Text(
-                      'Przepisy',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+          child: OutlinedButton.icon(
+            onPressed: _showComingSoon,
+            icon: const Icon(Icons.restaurant_menu_outlined),
+            label: const Text('Przepisy'),
           ),
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: Card(
-            child: InkWell(
-              onTap: () {},
-              borderRadius: BorderRadius.circular(12),
-              child: const Padding(
-                padding: EdgeInsets.symmetric(vertical: 20),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.shopping_basket_outlined),
-                    SizedBox(width: 8),
-                    Text(
-                      'Lista zakupów',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+          child: OutlinedButton.icon(
+            onPressed: _showComingSoon,
+            icon: const Icon(Icons.shopping_basket_outlined),
+            label: const Text('Lista zakupów'),
           ),
         ),
       ],
     );
   }
 
-  Widget _buildExpiringSection() {
+  Widget _buildExpiringPreview(List<_HomeProduct> items) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -262,30 +323,93 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Row(
               children: [
-                const Text(
-                  'Niedługo przeterminowane',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                Expanded(
+                  child: Text(
+                    'Blisko terminu (${items.length})',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
                 ),
-                const Spacer(),
-                Icon(Icons.warning_amber_rounded, color: Colors.orange[700]),
+                const SizedBox(width: 8),
+                const Icon(Icons.access_time, color: Colors.orange),
               ],
             ),
-            const SizedBox(height: 12),
-            ..._expiringItems.map((item) => _buildExpiringItem(item)),
-            const Divider(),
-            InkWell(
-              onTap: _openPantry,
-              child: const Padding(
-                padding: EdgeInsets.symmetric(vertical: 8),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text('Zobacz wszystkie'),
-                    SizedBox(width: 4),
-                    Icon(Icons.chevron_right, size: 18),
-                  ],
-                ),
-              ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: items.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'Brak produktów bliskich terminu.',
+                        textAlign: TextAlign.center,
+                      ),
+                    )
+                  : LayoutBuilder(
+                      builder: (context, constraints) {
+                        final textScale =
+                            MediaQuery.textScalerOf(context).scale(14) / 14;
+
+                        final rowHeight =
+                            76.0 * (textScale > 1 ? textScale : 1);
+
+                        final footerHeight =
+                            24.0 * (textScale > 1 ? textScale : 1);
+
+                        final allFit =
+                            items.length * rowHeight <= constraints.maxHeight;
+
+                        final availableHeight = allFit
+                            ? constraints.maxHeight
+                            : constraints.maxHeight - footerHeight;
+
+                        final visibleCount = (availableHeight / rowHeight)
+                            .floor()
+                            .clamp(0, items.length)
+                            .toInt();
+
+                        final hiddenCount = items.length - visibleCount;
+
+                        if (visibleCount == 0) {
+                          return Center(
+                            child: Text(
+                              'Produkty bliskie terminu: ${items.length}. '
+                              'Zobacz je w spiżarni.',
+                              textAlign: TextAlign.center,
+                            ),
+                          );
+                        }
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            ...items
+                                .take(visibleCount)
+                                .map(
+                                  (product) => SizedBox(
+                                    height: rowHeight,
+                                    child: _buildExpiringRow(product),
+                                  ),
+                                ),
+                            if (hiddenCount > 0)
+                              SizedBox(
+                                height: footerHeight,
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    'Pozostałe w spiżarni: $hiddenCount',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        );
+                      },
+                    ),
             ),
           ],
         ),
@@ -293,70 +417,63 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildExpiringItem(FoodItem item) {
-    Color dotColor;
-    switch (item.status) {
-      case ExpiryStatus.critical:
-        dotColor = Colors.red;
-      case ExpiryStatus.warning:
-        dotColor = Colors.orange;
-      case ExpiryStatus.ok:
-        dotColor = Colors.yellow[700]!;
+  Widget _buildExpiringRow(_HomeProduct product) {
+    final days = _daysUntil(product.expirationDate!);
+
+    final String label;
+
+    if (days == 0) {
+      label = 'Termin dzisiaj';
+    } else if (days == 1) {
+      label = 'Termin jutro';
+    } else {
+      label = 'Termin za $days dni';
     }
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          const Icon(Icons.egg_outlined, size: 28),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  item.name,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-                Text(
-                  item.quantity,
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-              ],
-            ),
+    return Row(
+      children: [
+        const Icon(Icons.inventory_2_outlined, color: Colors.orange),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                product.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              Text(
+                product.quantityLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.orange),
+              ),
+            ],
           ),
-          Text(item.expiryDate, style: const TextStyle(fontSize: 13)),
-          const SizedBox(width: 8),
-          Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
   Widget _buildPantryTile() {
     return Card(
-      child: InkWell(
-        onTap: _openPantry,
-        borderRadius: BorderRadius.circular(12),
-        child: const Padding(
-          padding: EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Icon(Icons.grid_view_outlined, size: 28),
-              SizedBox(width: 12),
-              Text(
-                'Spiżarnia',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-              ),
-              Spacer(),
-              Icon(Icons.chevron_right),
-            ],
-          ),
+      child: ListTile(
+        onTap: () => _openPantry(),
+        leading: const Icon(Icons.grid_view_outlined),
+        title: const Text(
+          'Spiżarnia',
+          style: TextStyle(fontWeight: FontWeight.bold),
         ),
+        subtitle: const Text('Zobacz wszystkie produkty'),
+        trailing: const Icon(Icons.chevron_right),
       ),
     );
   }
@@ -374,12 +491,55 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(width: 12),
         Expanded(
           child: OutlinedButton.icon(
-            onPressed: () {},
+            onPressed: _showComingSoon,
             icon: const Icon(Icons.edit_outlined),
             label: const Text('Usuń / Edytuj'),
           ),
         ),
       ],
     );
+  }
+}
+
+class _HomeProduct {
+  final String name;
+  final num? quantity;
+  final String unit;
+  final DateTime? expirationDate;
+
+  const _HomeProduct({
+    required this.name,
+    required this.quantity,
+    required this.unit,
+    required this.expirationDate,
+  });
+
+  factory _HomeProduct.fromMap(Map<String, dynamic> data) {
+    final rawName = data['productName'];
+    final rawQuantity = data['quantity'];
+    final rawUnit = data['unit'];
+    final rawDate = data['expirationDate'];
+
+    return _HomeProduct(
+      name: rawName is String && rawName.trim().isNotEmpty
+          ? rawName
+          : 'Produkt bez nazwy',
+      quantity: rawQuantity is num ? rawQuantity : null,
+      unit: rawUnit is String ? rawUnit : '',
+      expirationDate: rawDate is Timestamp ? rawDate.toDate() : null,
+    );
+  }
+
+  String get quantityLabel {
+    final value = quantity;
+
+    if (value == null) return 'Nie podano ilości';
+
+    final formatted = value
+        .toString()
+        .replaceFirst(RegExp(r'\.0$'), '')
+        .replaceAll('.', ',');
+
+    return '$formatted $unit'.trim();
   }
 }
