@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import '../models/food_item.dart';
+import 'add_product_screen.dart';
+import 'pantry_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final String householdId;
+
+  const HomeScreen({super.key, required this.householdId});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -10,6 +14,33 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
+  Future<void> _openAddProduct() async {
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => AddProductScreen(householdId: widget.householdId),
+      ),
+    );
+
+    if (!mounted || saved != true) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Produkt został zapisany w spiżarni.')),
+    );
+  }
+
+  Future<void> _openPantry() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => PantryScreen(householdId: widget.householdId),
+      ),
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _currentIndex = 0;
+    });
+  }
 
   // Przykładowe dane — później podepniemy prawdziwą bazę
   final List<FoodItem> _expiringItems = const [
@@ -68,7 +99,25 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
-        onDestinationSelected: (index) => setState(() => _currentIndex = index),
+        onDestinationSelected: (index) {
+          if (index == 1) {
+            _openPantry();
+            return;
+          }
+
+          if (index == 0) {
+            setState(() {
+              _currentIndex = 0;
+            });
+            return;
+          }
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Ta funkcja będzie dostępna później.'),
+            ),
+          );
+        },
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.home_outlined),
@@ -225,7 +274,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ..._expiringItems.map((item) => _buildExpiringItem(item)),
             const Divider(),
             InkWell(
-              onTap: () {},
+              onTap: _openPantry,
               child: const Padding(
                 padding: EdgeInsets.symmetric(vertical: 8),
                 child: Row(
@@ -291,7 +340,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildPantryTile() {
     return Card(
       child: InkWell(
-        onTap: () {},
+        onTap: _openPantry,
         borderRadius: BorderRadius.circular(12),
         child: const Padding(
           padding: EdgeInsets.all(16),
@@ -317,7 +366,7 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         Expanded(
           child: FilledButton.icon(
-            onPressed: () {},
+            onPressed: _openAddProduct,
             icon: const Icon(Icons.add),
             label: const Text('Dodaj'),
           ),

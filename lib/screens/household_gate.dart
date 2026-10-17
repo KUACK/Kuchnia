@@ -68,7 +68,7 @@ class _HouseholdGateState extends State<HouseholdGate> {
           );
         }
 
-        return const HomeScreen();
+        return HomeScreen(householdId: householdId);
       },
     );
   }
