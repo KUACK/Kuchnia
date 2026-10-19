@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import 'add_product_screen.dart';
+import 'edit_product_screen.dart';
 
 class PantryScreen extends StatefulWidget {
   final String householdId;
@@ -45,6 +46,36 @@ class _PantryScreenState extends State<PantryScreen> {
     );
   }
 
+  Future<void> _openEditProduct(
+    QueryDocumentSnapshot<Map<String, dynamic>> document,
+  ) async {
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => EditProductScreen(
+          householdId: widget.householdId,
+          productId: document.id,
+          initialData: document.data(),
+        ),
+      ),
+    );
+
+    if (!mounted || result == null) return;
+
+    final String message;
+
+    if (result == 'deleted') {
+      message = 'Produkt został usunięty ze spiżarni.';
+    } else if (result == 'updated') {
+      message = 'Zmiany produktu zostały zapisane.';
+    } else {
+      return;
+    }
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   DateTime? _expirationDate(Map<String, dynamic> data) {
     final value = data['expirationDate'];
 
@@ -82,14 +113,16 @@ class _PantryScreenState extends State<PantryScreen> {
   int _daysUntil(DateTime date) {
     final now = DateTime.now();
 
-    // Porównujemy daty kalendarzowe, bez godzin i zmian czasu.
+    // Porównujemy dni kalendarzowe, bez wpływu zmiany czasu.
     final today = DateTime.utc(now.year, now.month, now.day);
     final expiry = DateTime.utc(date.year, date.month, date.day);
 
     return expiry.difference(today).inDays;
   }
 
-  Widget _buildProduct(Map<String, dynamic> data) {
+  Widget _buildProduct(QueryDocumentSnapshot<Map<String, dynamic>> document) {
+    final data = document.data();
+
     final name = _text(data['productName'], 'Produkt bez nazwy');
     final quantity = _formatQuantity(data['quantity']);
     final unit = _text(data['unit'], '');
@@ -122,52 +155,56 @@ class _PantryScreenState extends State<PantryScreen> {
     }
 
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(
-              Icons.inventory_2_outlined,
-              color: Theme.of(context).colorScheme.primary,
-              size: 30,
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(name, style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 4),
-                  Text('$quantity $unit'),
-                  const SizedBox(height: 4),
-                  Text(
-                    '$category • $location',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    date == null
-                        ? 'Nie podano terminu ważności'
-                        : 'Termin ważności: ${_formatDate(date)}',
-                  ),
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      Icon(Icons.circle, size: 10, color: statusColor),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          statusText,
-                          style: TextStyle(color: statusColor),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => _openEditProduct(document),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.inventory_2_outlined,
+                color: Theme.of(context).colorScheme.primary,
+                size: 30,
               ),
-            ),
-          ],
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(name, style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 4),
+                    Text('$quantity $unit'),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$category • $location',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      date == null
+                          ? 'Nie podano terminu ważności'
+                          : 'Termin ważności: ${_formatDate(date)}',
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Icon(Icons.circle, size: 10, color: statusColor),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            statusText,
+                            style: TextStyle(color: statusColor),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -220,6 +257,7 @@ class _PantryScreenState extends State<PantryScreen> {
             }
 
             final date = _expirationDate(data);
+
             return date != null && _daysUntil(date) < 0;
           }).toList();
 
@@ -238,12 +276,16 @@ class _PantryScreenState extends State<PantryScreen> {
           if (products.isEmpty) {
             return Center(
               child: Padding(
-                padding: EdgeInsets.all(24),
+                padding: const EdgeInsets.all(24),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.kitchen_outlined, size: 72, color: Colors.grey),
-                    SizedBox(height: 16),
+                    const Icon(
+                      Icons.kitchen_outlined,
+                      size: 72,
+                      color: Colors.grey,
+                    ),
+                    const SizedBox(height: 16),
                     Text(
                       widget.onlyExpired
                           ? 'Nie masz produktów po zapisanym terminie.'
@@ -268,7 +310,7 @@ class _PantryScreenState extends State<PantryScreen> {
             itemCount: products.length,
             separatorBuilder: (_, __) => const SizedBox(height: 8),
             itemBuilder: (context, index) {
-              return _buildProduct(products[index].data());
+              return _buildProduct(products[index]);
             },
           );
         },
