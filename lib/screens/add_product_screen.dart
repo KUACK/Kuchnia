@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../widgets/expiration_date_field.dart';
+
 import '../models/package_size.dart';
 import '../services/open_food_facts_service.dart';
 import 'product_entry_screen.dart';
@@ -33,6 +35,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
   bool _storageLocationWasSelectedManually = false;
 
   DateTime? _expirationDate;
+  bool _withoutExpirationDate = false;
 
   bool _isSaving = false;
   bool _isLookupOpen = false;
@@ -57,6 +60,10 @@ class _AddProductScreenState extends State<AddProductScreen> {
   static const _units = ['szt.', 'g', 'kg', 'ml', 'l'];
 
   static const _locations = ['Lodówka', 'Zamrażarka', 'Szafka', 'Inne'];
+
+  static const _imageHeaders = {
+    'User-Agent': 'KuchniaPlus/1.0.0 (Android; grzegorzloban@gmail.com)',
+  };
 
   @override
   void initState() {
@@ -120,13 +127,6 @@ class _AddProductScreenState extends State<AddProductScreen> {
     final total = size * count;
 
     return total.isFinite ? total : null;
-  }
-
-  String _formatDate(DateTime date) {
-    final day = date.day.toString().padLeft(2, '0');
-    final month = date.month.toString().padLeft(2, '0');
-
-    return '$day.$month.${date.year}';
   }
 
   String? _suggestedName(ProductLookupResult product) {
@@ -211,114 +211,22 @@ class _AddProductScreenState extends State<AddProductScreen> {
       final canApplyCategory =
           !_categoryWasSelectedManually && suggestedCategory != null;
 
-      final currentName = _nameController.text.trim();
-      final currentSizeText = _packageSizeController.text.trim();
-      final currentSize = _parseNumber(currentSizeText);
-
-      final wouldReplaceName =
-          suggestedName != null &&
-          currentName.isNotEmpty &&
-          currentName != suggestedName;
-
-      final wouldReplacePackage =
-          suggestedPackage != null &&
-          currentSizeText.isNotEmpty &&
-          (currentSize != suggestedPackage.value ||
-              _unit != suggestedPackage.unit);
-
-      if (wouldReplaceName || wouldReplacePackage) {
-        final details = [
-          if (suggestedName != null) 'Nazwa: $suggestedName',
-          if (suggestedPackage != null)
-            'Opakowanie: ${suggestedPackage.inputText} '
-                '${suggestedPackage.unit}',
-          if (canApplyCategory) 'Kategoria: $suggestedCategory',
-        ].join('\n');
-
-        final useSuggestion = await showDialog<bool>(
-          context: context,
-          builder: (dialogContext) {
-            return AlertDialog(
-              title: const Text('Użyć danych z katalogu?'),
-              content: SingleChildScrollView(
-                child: Text(
-                  'Część pól jest już uzupełniona.\n\n'
-                  '$details\n\n'
-                  'Użycie podpowiedzi zastąpi odpowiednie pola '
-                  'i podgląd produktu. Kategoria wybrana ręcznie '
-                  'zostanie zachowana. Liczba opakowań '
-                  'i termin ważności pozostaną bez zmian. '
-                  'Miejsce może zostać podpowiedziane na podstawie kategorii, '
-                  'chyba że wybrano je ręcznie.',
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(dialogContext).pop(false);
-                  },
-                  child: const Text('Zachowaj obecne'),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    Navigator.of(dialogContext).pop(true);
-                  },
-                  child: const Text('Użyj podpowiedzi'),
-                ),
-              ],
-            );
-          },
-        );
-
-        if (!mounted || useSuggestion != true) return;
-      }
-
-      final messages = <String>[];
+      final warnings = <String>[];
 
       if (suggestedName == null) {
-        messages.add(
-          'Brak nazwy w katalogu — wpisz ją ręcznie. '
-          'Obecnej nazwy nie zmieniono.',
+        warnings.add('Brak nazwy w katalogu — wpisz ją ręcznie.');
+      } else if (suggestedName.length > 120) {
+        warnings.add(
+          'Podpowiedziana nazwa przekracza 120 znaków — '
+          'skróć ją przed zapisaniem.',
         );
-      } else {
-        messages.add('Sprawdź i w razie potrzeby popraw nazwę.');
-
-        if (suggestedName.length > 120) {
-          messages.add(
-            'Podpowiedziana nazwa przekracza 120 znaków — '
-            'skróć ją przed zapisaniem.',
-          );
-        }
       }
 
       if (suggestedPackage == null) {
-        messages.add(
-          'Brak jednoznacznej wielkości opakowania. '
-          'Sprawdź ją na etykiecie; pól wielkości i jednostki '
-          'nie zmieniono.',
-        );
-      } else {
-        messages.add(
-          'Wielkość opakowania podpowiedziano z katalogu — '
-          'sprawdź ją na etykiecie.',
+        warnings.add(
+          'Brak jednoznacznej wielkości opakowania — sprawdź ją na etykiecie.',
         );
       }
-
-      if (_categoryWasSelectedManually) {
-        messages.add('Zachowano kategorię wybraną ręcznie.');
-      } else if (suggestedCategory != null) {
-        messages.add(
-          'Podpowiedziana kategoria: $suggestedCategory. '
-          'Możesz ją zmienić.',
-        );
-      } else {
-        messages.add(
-          'Brak jednoznacznej podpowiedzi kategorii — '
-          'sprawdź obecny wybór.',
-        );
-      }
-
-      messages.add('Liczba opakowań i termin ważności nie są pobierane z API.');
 
       setState(() {
         if (suggestedName != null) {
@@ -336,7 +244,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
         }
 
         _catalogProduct = result;
-        _lookupMessage = messages.join(' ');
+        _lookupMessage = warnings.isEmpty ? null : warnings.join(' ');
         _errorMessage = null;
       });
     } catch (_) {
@@ -357,150 +265,90 @@ class _AddProductScreenState extends State<AddProductScreen> {
     }
   }
 
-  void _removeCatalogPreview() {
-    setState(() {
-      _catalogProduct = null;
-      _lookupMessage = 'Podgląd usunięto. Dane wpisane w formularzu zachowano.';
-    });
-  }
-
-  Widget _imagePlaceholder(String message) {
-    return SizedBox(
-      height: 160,
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.image_not_supported_outlined,
-              size: 36,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
+  void _showImageZoom(String imageUrl) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.all(16),
+          child: GestureDetector(
+            onTap: () => Navigator.of(dialogContext).pop(),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: InteractiveViewer(
+                    minScale: 1,
+                    maxScale: 4,
+                    child: Image.network(
+                      imageUrl,
+                      fit: BoxFit.contain,
+                      headers: _imageHeaders,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Zdjęcie: Open Food Facts (CC BY-SA)',
+                  style: TextStyle(color: Colors.white, fontSize: 13),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            Text(message, textAlign: TextAlign.center),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
   Widget _buildCatalogPreview(ProductLookupResult product) {
     final imageUrl = product.imageUrl;
 
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Podgląd z katalogu',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Usuń podgląd bez zmiany formularza',
-                  onPressed: _isSaving || _isLookupOpen
-                      ? null
-                      : _removeCatalogPreview,
-                  icon: const Icon(Icons.close),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            if (imageUrl == null)
-              _imagePlaceholder('Brak zdjęcia w katalogu')
-            else
-              SizedBox(
-                width: double.infinity,
-                height: 160,
-                child: Image.network(
-                  imageUrl,
-                  key: ValueKey(imageUrl),
-                  fit: BoxFit.contain,
-                  semanticLabel: 'Zdjęcie opakowania z Open Food Facts',
-                  headers: const {
-                    'User-Agent':
-                        'KuchniaPlus/1.0.0 '
-                        '(Android; grzegorzloban@gmail.com)',
-                  },
-                  loadingBuilder: (context, child, progress) {
-                    if (progress == null) return child;
+    if (imageUrl == null) return const SizedBox.shrink();
 
-                    return const Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 8),
-                          Text('Ładowanie zdjęcia…'),
-                        ],
-                      ),
-                    );
-                  },
-                  errorBuilder: (context, error, stackTrace) {
-                    return _imagePlaceholder('Nie udało się wczytać zdjęcia');
-                  },
-                ),
-              ),
-            const SizedBox(height: 16),
-            Text(
-              product.productName ?? 'Brak nazwy w katalogu',
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
-            const SizedBox(height: 8),
-            Text('Marka: ${product.brands ?? 'brak danych'}'),
-            const SizedBox(height: 6),
-            Text(
-              'Opakowanie według katalogu: '
-              '${product.packageQuantity ?? 'brak danych'}',
-            ),
-            const SizedBox(height: 6),
-            Text('Kod: ${product.barcode}'),
-            const SizedBox(height: 12),
-            const Text(
-              'Sprawdź dane na swoim opakowaniu. '
-              'Termin ważności oraz liczbę posiadanych opakowań '
-              'podajesz samodzielnie.',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Źródło: Open Food Facts. Dane: ODbL. '
-              'Zdjęcia: CC BY-SA. Dane mogą być niepełne lub błędne. '
-              'Adres dostępnego zdjęcia i jego źródło mogą zostać '
-              'zapisane przy produkcie. Sam plik zdjęcia nie trafia do Firestore.',
-              style: TextStyle(fontSize: 12),
-            ),
-          ],
+    return GestureDetector(
+      onTap: () => _showImageZoom(imageUrl),
+      child: SizedBox(
+        width: double.infinity,
+        height: 200,
+        child: Image.network(
+          imageUrl,
+          key: ValueKey(imageUrl),
+          fit: BoxFit.contain,
+          semanticLabel: 'Zdjęcie opakowania. Kliknij, aby powiększyć',
+          headers: _imageHeaders,
+          loadingBuilder: (context, child, progress) {
+            if (progress == null) return child;
+            return const Center(child: CircularProgressIndicator());
+          },
+          errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
         ),
       ),
     );
   }
 
-  Future<void> _chooseDate() async {
-    if (_isSaving || _isLookupOpen) return;
-
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-
-    final selected = await showDatePicker(
-      context: context,
-      initialDate: _expirationDate ?? today,
-      firstDate: DateTime(2000),
-      lastDate: DateTime(today.year + 30, 12, 31),
+  Widget _buildExpirationDateField() {
+    return ExpirationDateField(
+      date: _expirationDate,
+      withoutExpirationDate: _withoutExpirationDate,
+      enabled: !(_isSaving || _isLookupOpen),
+      onDateSelected: (date) {
+        if (!mounted || _isSaving || _isLookupOpen) return;
+        setState(() {
+          _expirationDate = date;
+          _withoutExpirationDate = false;
+          _errorMessage = null;
+        });
+      },
+      onWithoutExpirationDate: () {
+        if (!mounted || _isSaving || _isLookupOpen) return;
+        setState(() {
+          _expirationDate = null;
+          _withoutExpirationDate = true;
+          _errorMessage = null;
+        });
+      },
     );
-
-    if (!mounted || selected == null) return;
-
-    setState(() {
-      _expirationDate = selected;
-      _errorMessage = null;
-    });
   }
 
   Future<void> _saveProduct() async {
@@ -508,10 +356,10 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
     final formIsValid = _formKey.currentState?.validate() ?? false;
 
-    if (!formIsValid || _expirationDate == null) {
+    if (!formIsValid || (_expirationDate == null && !_withoutExpirationDate)) {
       setState(() {
-        _errorMessage = _expirationDate == null
-            ? 'Wybierz termin ważności produktu.'
+        _errorMessage = _expirationDate == null && !_withoutExpirationDate
+            ? 'Wybierz datę ważności lub zaznacz „Bez terminu”.'
             : 'Popraw zaznaczone pola.';
       });
       return;
@@ -545,7 +393,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
     });
 
     try {
-      final date = _expirationDate!;
+      final date = _withoutExpirationDate ? null : _expirationDate;
 
       final data = <String, dynamic>{
         'productName': _nameController.text.trim(),
@@ -555,9 +403,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
         'quantity': total,
         'unit': _unit,
         'storageLocation': _storageLocation,
-        'expirationDate': Timestamp.fromDate(
-          DateTime(date.year, date.month, date.day),
-        ),
+        'expirationDate': date == null
+            ? null
+            : Timestamp.fromDate(DateTime(date.year, date.month, date.day)),
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'createdBy': user.uid,
@@ -843,30 +691,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
                         });
                       },
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _storageLocationWasSelectedManually
-                          ? 'Zachowamy miejsce wybrane przez Ciebie.'
-                          : 'Miejsce może być podpowiedziane na podstawie kategorii. '
-                                'Sprawdź zalecenia na opakowaniu.',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
+
                     const SizedBox(height: 20),
-                    OutlinedButton.icon(
-                      onPressed: _isSaving || _isLookupOpen
-                          ? null
-                          : _chooseDate,
-                      icon: const Icon(Icons.calendar_month_outlined),
-                      label: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        child: Text(
-                          _expirationDate == null
-                              ? 'Wybierz termin ważności'
-                              : 'Termin: '
-                                    '${_formatDate(_expirationDate!)}',
-                        ),
-                      ),
-                    ),
+                    _buildExpirationDateField(),
                     if (_errorMessage != null) ...[
                       const SizedBox(height: 16),
                       Text(

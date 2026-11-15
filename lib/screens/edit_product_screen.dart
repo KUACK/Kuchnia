@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../widgets/expiration_date_field.dart';
+
 class EditProductScreen extends StatefulWidget {
   final String householdId;
   final String productId;
@@ -31,6 +33,7 @@ class _EditProductScreenState extends State<EditProductScreen> {
   late String _storageLocation;
 
   DateTime? _expirationDate;
+  bool _withoutExpirationDate = false;
   bool _isBusy = false;
   String? _errorMessage;
 
@@ -92,6 +95,8 @@ class _EditProductScreenState extends State<EditProductScreen> {
         : 'Inne';
 
     final date = data['expirationDate'];
+    _withoutExpirationDate =
+        data.containsKey('expirationDate') && date == null;
 
     if (date is Timestamp) {
       final localDate = date.toDate();
@@ -174,40 +179,29 @@ class _EditProductScreenState extends State<EditProductScreen> {
     return total.isFinite ? total : null;
   }
 
-  String _formatDate(DateTime date) {
-    final day = date.day.toString().padLeft(2, '0');
-    final month = date.month.toString().padLeft(2, '0');
 
-    return '$day.$month.${date.year}';
-  }
-
-  Future<void> _chooseDate() async {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final initialDate = _expirationDate ?? today;
-
-    final firstDate = initialDate.isBefore(DateTime(2000))
-        ? initialDate
-        : DateTime(2000);
-
-    final defaultLastDate = DateTime(today.year + 30, 12, 31);
-    final lastDate = initialDate.isAfter(defaultLastDate)
-        ? initialDate
-        : defaultLastDate;
-
-    final selected = await showDatePicker(
-      context: context,
-      initialDate: initialDate,
-      firstDate: firstDate,
-      lastDate: lastDate,
+  Widget _buildExpirationDateField() {
+    return ExpirationDateField(
+      date: _expirationDate,
+      withoutExpirationDate: _withoutExpirationDate,
+      enabled: !(_isBusy),
+      onDateSelected: (date) {
+        if (!mounted || _isBusy) return;
+        setState(() {
+          _expirationDate = date;
+          _withoutExpirationDate = false;
+          _errorMessage = null;
+        });
+      },
+      onWithoutExpirationDate: () {
+        if (!mounted || _isBusy) return;
+        setState(() {
+          _expirationDate = null;
+          _withoutExpirationDate = true;
+          _errorMessage = null;
+        });
+      },
     );
-
-    if (!mounted || selected == null) return;
-
-    setState(() {
-      _expirationDate = selected;
-      _errorMessage = null;
-    });
   }
 
   String _messageForError(FirebaseException error) {
@@ -231,10 +225,11 @@ class _EditProductScreenState extends State<EditProductScreen> {
 
     final isValid = _formKey.currentState!.validate();
 
-    if (!isValid || _expirationDate == null) {
+    if (!isValid ||
+        (_expirationDate == null && !_withoutExpirationDate)) {
       setState(() {
-        _errorMessage = _expirationDate == null
-            ? 'Wybierz termin ważności produktu.'
+        _errorMessage = _expirationDate == null && !_withoutExpirationDate
+            ? 'Wybierz datę ważności lub zaznacz „Bez terminu”.'
             : 'Popraw zaznaczone pola.';
       });
       return;
@@ -259,7 +254,7 @@ class _EditProductScreenState extends State<EditProductScreen> {
     });
 
     try {
-      final date = _expirationDate!;
+      final date = _expirationDate;
 
       final changes = <String, dynamic>{
         'productName': _nameController.text.trim(),
@@ -267,9 +262,11 @@ class _EditProductScreenState extends State<EditProductScreen> {
         'unit': _unit,
         'category': _category,
         'storageLocation': _storageLocation,
-        'expirationDate': Timestamp.fromDate(
-          DateTime(date.year, date.month, date.day),
-        ),
+        'expirationDate': date == null
+            ? null
+            : Timestamp.fromDate(
+                DateTime(date.year, date.month, date.day),
+              ),
         'updatedAt': FieldValue.serverTimestamp(),
       };
 
@@ -544,18 +541,7 @@ class _EditProductScreenState extends State<EditProductScreen> {
                       },
                     ),
                     const SizedBox(height: 20),
-                    OutlinedButton.icon(
-                      onPressed: _isBusy ? null : _chooseDate,
-                      icon: const Icon(Icons.calendar_month_outlined),
-                      label: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        child: Text(
-                          _expirationDate == null
-                              ? 'Wybierz termin ważności'
-                              : 'Termin: ${_formatDate(_expirationDate!)}',
-                        ),
-                      ),
-                    ),
+                    _buildExpirationDateField(),
                     if (_errorMessage != null) ...[
                       const SizedBox(height: 16),
                       Text(

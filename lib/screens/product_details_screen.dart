@@ -389,7 +389,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                     _infoRow(
                       Icons.calendar_month_outlined,
                       'Termin ważności',
-                      date == null ? 'Nie podano' : _formatDate(date),
+                      date == null ? 'Bez terminu' : _formatDate(date),
                     ),
                     _infoRow(_categoryIcon(category), 'Kategoria', category),
                     _infoRow(

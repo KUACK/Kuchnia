@@ -5,7 +5,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import 'add_product_screen.dart';
+import 'edit_product_screen.dart';
 import 'product_details_screen.dart';
+
+class _PendingDelete {
+  final DocumentReference<Map<String, dynamic>> reference;
+  final Timer timer;
+
+  const _PendingDelete(this.reference, this.timer);
+}
 
 class PantryScreen extends StatefulWidget {
   final String householdId;
@@ -22,8 +30,14 @@ class PantryScreen extends StatefulWidget {
 }
 
 class _PantryScreenState extends State<PantryScreen> {
+  static const _undoDuration = Duration(seconds: 5);
+
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _productsStream;
   Timer? _dateTimer;
+  bool _isBusy = false;
+  ScaffoldMessengerState? _messenger;
+
+  final Map<String, _PendingDelete> _pendingDeletes = {};
 
   @override
   void initState() {
@@ -43,8 +57,32 @@ class _PantryScreenState extends State<PantryScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _messenger = ScaffoldMessenger.of(context);
+  }
+
+  @override
   void dispose() {
     _dateTimer?.cancel();
+
+    final hadPending = _pendingDeletes.isNotEmpty;
+
+    for (final pending in _pendingDeletes.values) {
+      pending.timer.cancel();
+      pending.reference.delete().catchError((Object _) {});
+    }
+
+    _pendingDeletes.clear();
+
+    final messenger = _messenger;
+
+    if (hadPending && messenger != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        messenger.clearSnackBars();
+      });
+    }
+
     super.dispose();
   }
 
@@ -79,6 +117,137 @@ class _PantryScreenState extends State<PantryScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Produkt został usunięty ze spiżarni.')),
     );
+  }
+
+  Future<void> _openEdit(
+    QueryDocumentSnapshot<Map<String, dynamic>> document,
+  ) async {
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
+        builder: (_) => EditProductScreen(
+          householdId: widget.householdId,
+          productId: document.id,
+          initialData: Map<String, dynamic>.from(document.data()),
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+
+    if (result == 'deleted') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Produkt został usunięty ze spiżarni.')),
+      );
+    } else if (result == 'updated') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Zmiany produktu zostały zapisane.')),
+      );
+    }
+  }
+
+  void _deleteProduct(QueryDocumentSnapshot<Map<String, dynamic>> document) {
+    final id = document.id;
+
+    if (_pendingDeletes.containsKey(id)) return;
+
+    final name = _text(document.data()['productName'], 'Produkt bez nazwy');
+    final messenger = ScaffoldMessenger.of(context);
+
+    final timer = Timer(_undoDuration, () {
+      _commitDelete(id);
+    });
+
+    setState(() {
+      _pendingDeletes[id] = _PendingDelete(document.reference, timer);
+    });
+
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text('Usunięto: $name'),
+        duration: _undoDuration,
+        action: SnackBarAction(
+          label: 'Cofnij',
+          onPressed: () {
+            if (!mounted) return;
+            _undoDelete(id);
+          },
+        ),
+      ),
+    );
+  }
+
+  void _undoDelete(String id) {
+    final pending = _pendingDeletes[id];
+
+    if (pending == null) return;
+
+    pending.timer.cancel();
+
+    setState(() {
+      _pendingDeletes.remove(id);
+    });
+  }
+
+  Future<void> _commitDelete(String id) async {
+    final pending = _pendingDeletes[id];
+
+    if (pending == null) return;
+
+    try {
+      await pending.reference.delete();
+
+      if (!mounted) return;
+
+      setState(() {
+        _pendingDeletes.remove(id);
+      });
+    } on FirebaseException catch (error) {
+      if (!mounted) return;
+
+      setState(() {
+        _pendingDeletes.remove(id);
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Nie udało się usunąć produktu. Kod: ${error.code}'),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() {
+        _pendingDeletes.remove(id);
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Nie udało się usunąć produktu. Spróbuj ponownie.'),
+        ),
+      );
+    }
+  }
+
+  Future<bool> _handleSwipe(
+    QueryDocumentSnapshot<Map<String, dynamic>> document,
+    DismissDirection direction,
+  ) async {
+    if (_isBusy) return false;
+
+    _isBusy = true;
+
+    try {
+      if (direction == DismissDirection.endToStart) {
+        _deleteProduct(document);
+      } else if (direction == DismissDirection.startToEnd) {
+        await _openEdit(document);
+      }
+    } finally {
+      _isBusy = false;
+    }
+
+    return false;
   }
 
   DateTime? _expirationDate(Map<String, dynamic> data) {
@@ -238,7 +407,7 @@ class _PantryScreenState extends State<PantryScreen> {
     final colors = Theme.of(context).colorScheme;
 
     Color color = colors.onSurfaceVariant;
-    String label = 'Brak terminu';
+    String label = 'Bez terminu';
     IconData icon = Icons.event_outlined;
 
     if (date != null) {
@@ -292,6 +461,37 @@ class _PantryScreenState extends State<PantryScreen> {
     );
   }
 
+  Widget _swipeBackground({
+    required Color color,
+    required IconData icon,
+    required String label,
+    required Alignment alignment,
+  }) {
+    return Container(
+      alignment: alignment,
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: Colors.white),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildProduct(QueryDocumentSnapshot<Map<String, dynamic>> document) {
     final data = document.data();
     final colors = Theme.of(context).colorScheme;
@@ -300,7 +500,7 @@ class _PantryScreenState extends State<PantryScreen> {
     final category = _text(data['category'], 'Inne');
     final date = _expirationDate(data);
 
-    return Card(
+    final card = Card(
       margin: EdgeInsets.zero,
       elevation: 0,
       color: colors.surfaceContainerLow,
@@ -367,6 +567,25 @@ class _PantryScreenState extends State<PantryScreen> {
           ),
         ),
       ),
+    );
+
+    return Dismissible(
+      key: ValueKey(document.id),
+      direction: DismissDirection.horizontal,
+      background: _swipeBackground(
+        color: Colors.blue.shade600,
+        icon: Icons.edit_outlined,
+        label: 'Edytuj',
+        alignment: Alignment.centerLeft,
+      ),
+      secondaryBackground: _swipeBackground(
+        color: Colors.red.shade600,
+        icon: Icons.delete_outline,
+        label: 'Usuń',
+        alignment: Alignment.centerRight,
+      ),
+      confirmDismiss: (direction) => _handleSwipe(document, direction),
+      child: card,
     );
   }
 
@@ -446,6 +665,8 @@ class _PantryScreenState extends State<PantryScreen> {
             }
 
             final products = snapshot.data!.docs.where((document) {
+              if (_pendingDeletes.containsKey(document.id)) return false;
+
               final data = document.data();
 
               if (data['status'] != 'active') return false;
