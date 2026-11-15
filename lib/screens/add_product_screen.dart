@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/package_size.dart';
 import '../services/open_food_facts_service.dart';
-import 'barcode_lookup_dialog.dart';
+import 'product_entry_screen.dart';
 
 class AddProductScreen extends StatefulWidget {
   final String householdId;
@@ -27,15 +27,20 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
   String _category = 'Inne';
   bool _categoryWasSelectedManually = false;
+
   String _unit = 'szt.';
   String _storageLocation = 'Lodówka';
+  bool _storageLocationWasSelectedManually = false;
 
   DateTime? _expirationDate;
+
   bool _isSaving = false;
   bool _isLookupOpen = false;
+  bool _isInitialEntryPending = true;
 
   String? _errorMessage;
   String? _lookupMessage;
+
   ProductLookupResult? _catalogProduct;
 
   static const _categories = [
@@ -50,7 +55,19 @@ class _AddProductScreenState extends State<AddProductScreen> {
   ];
 
   static const _units = ['szt.', 'g', 'kg', 'ml', 'l'];
+
   static const _locations = ['Lodówka', 'Zamrażarka', 'Szafka', 'Inne'];
+
+  @override
+  void initState() {
+    super.initState();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+
+      _lookupProduct();
+    });
+  }
 
   @override
   void dispose() {
@@ -58,6 +75,22 @@ class _AddProductScreenState extends State<AddProductScreen> {
     _packageSizeController.dispose();
     _packageCountController.dispose();
     super.dispose();
+  }
+
+  void _suggestStorageLocation() {
+    if (_storageLocationWasSelectedManually) return;
+
+    final suggestedLocation = switch (_category) {
+      'Nabiał' => 'Lodówka',
+      'Mięso i ryby' => 'Lodówka',
+      'Pieczywo' => 'Szafka',
+      'Produkty suche' => 'Szafka',
+      _ => null,
+    };
+
+    if (suggestedLocation != null) {
+      _storageLocation = suggestedLocation;
+    }
   }
 
   double? _parseNumber(String? value) {
@@ -105,7 +138,6 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
     if (brands == null || brands.isEmpty) return name;
 
-    // API może zwrócić kilka marek rozdzielonych przecinkami.
     final missingBrands = brands
         .split(',')
         .map((brand) => brand.trim())
@@ -124,25 +156,47 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
     FocusScope.of(context).unfocus();
 
+    final isInitialEntry = _isInitialEntryPending;
+
     setState(() {
       _isLookupOpen = true;
     });
 
     try {
-      final result = await showDialog<ProductLookupResult>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => BarcodeLookupDialog(service: _lookupService),
+      final result = await Navigator.of(context).push<ProductLookupResult>(
+        PageRouteBuilder<ProductLookupResult>(
+          pageBuilder: (context, animation, secondaryAnimation) {
+            return ProductEntryScreen(service: _lookupService);
+          },
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+        ),
       );
 
-      if (!mounted || result == null) return;
+      if (!mounted) return;
+
+      if (result == null) {
+        if (isInitialEntry && ModalRoute.of(context)?.isCurrent == true) {
+          Navigator.of(context).pop();
+        }
+
+        return;
+      }
+
+      setState(() {
+        _isInitialEntryPending = false;
+      });
 
       if (result.status != ProductLookupStatus.found) {
         setState(() {
           _catalogProduct = null;
-          _lookupMessage =
-              'Uzupełnij produkt ręcznie. Dane formularza zachowano.';
+          _lookupMessage = result.barcode.isEmpty
+              ? 'Uzupełnij dane produktu ręcznie.'
+              : 'Nie znaleziono produktu w katalogu. '
+                    'Uzupełnij dane ręcznie. '
+                    'Dotychczasowe dane formularza zachowano.';
         });
+
         return;
       }
 
@@ -173,7 +227,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
               _unit != suggestedPackage.unit);
 
       if (wouldReplaceName || wouldReplacePackage) {
-        final details = <String>[
+        final details = [
           if (suggestedName != null) 'Nazwa: $suggestedName',
           if (suggestedPackage != null)
             'Opakowanie: ${suggestedPackage.inputText} '
@@ -186,13 +240,17 @@ class _AddProductScreenState extends State<AddProductScreen> {
           builder: (dialogContext) {
             return AlertDialog(
               title: const Text('Użyć danych z katalogu?'),
-              content: Text(
-                'Część pól jest już uzupełniona.\n\n'
-                '$details\n\n'
-                'Użycie podpowiedzi zastąpi odpowiednie pola '
-                'i podgląd produktu. Kategoria wybrana ręcznie '
-                'zostanie zachowana. Liczba opakowań, miejsce '
-                'i termin ważności pozostaną bez zmian.',
+              content: SingleChildScrollView(
+                child: Text(
+                  'Część pól jest już uzupełniona.\n\n'
+                  '$details\n\n'
+                  'Użycie podpowiedzi zastąpi odpowiednie pola '
+                  'i podgląd produktu. Kategoria wybrana ręcznie '
+                  'zostanie zachowana. Liczba opakowań '
+                  'i termin ważności pozostaną bez zmian. '
+                  'Miejsce może zostać podpowiedziane na podstawie kategorii, '
+                  'chyba że wybrano je ręcznie.',
+                ),
               ),
               actions: [
                 TextButton(
@@ -274,16 +332,26 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
         if (canApplyCategory) {
           _category = suggestedCategory;
+          _suggestStorageLocation();
         }
 
         _catalogProduct = result;
         _lookupMessage = messages.join(' ');
         _errorMessage = null;
       });
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() {
+        _errorMessage =
+            'Nie udało się otworzyć wyszukiwania produktu. '
+            'Możesz uzupełnić formularz ręcznie.';
+      });
     } finally {
       if (mounted) {
         setState(() {
           _isLookupOpen = false;
+          _isInitialEntryPending = false;
         });
       }
     }
@@ -336,7 +404,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
                 ),
                 IconButton(
                   tooltip: 'Usuń podgląd bez zmiany formularza',
-                  onPressed: _isSaving ? null : _removeCatalogPreview,
+                  onPressed: _isSaving || _isLookupOpen
+                      ? null
+                      : _removeCatalogPreview,
                   icon: const Icon(Icons.close),
                 ),
               ],
@@ -412,6 +482,8 @@ class _AddProductScreenState extends State<AddProductScreen> {
   }
 
   Future<void> _chooseDate() async {
+    if (_isSaving || _isLookupOpen) return;
+
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
 
@@ -433,7 +505,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
   Future<void> _saveProduct() async {
     if (_isSaving || _isLookupOpen) return;
 
-    final formIsValid = _formKey.currentState!.validate();
+    final formIsValid = _formKey.currentState?.validate() ?? false;
 
     if (!formIsValid || _expirationDate == null) {
       setState(() {
@@ -441,6 +513,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
             ? 'Wybierz termin ważności produktu.'
             : 'Popraw zaznaczone pola.';
       });
+
       return;
     }
 
@@ -452,6 +525,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
             'Łączna ilość musi być większa od 0 '
             'i nie może przekraczać 1 mln wybranych jednostek.';
       });
+
       return;
     }
 
@@ -461,6 +535,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
       setState(() {
         _errorMessage = 'Sesja wygasła. Zaloguj się ponownie.';
       });
+
       return;
     }
 
@@ -514,7 +589,8 @@ class _AddProductScreenState extends State<AddProductScreen> {
             break;
           default:
             _errorMessage =
-                'Nie udało się zapisać produktu. Kod: ${error.code}';
+                'Nie udało się zapisać produktu. '
+                'Kod: ${error.code}';
         }
       });
     } catch (_) {
@@ -550,7 +626,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
       items: options.map((option) {
         return DropdownMenuItem<String>(value: option, child: Text(option));
       }).toList(),
-      onChanged: _isSaving
+      onChanged: _isSaving || _isLookupOpen
           ? null
           : (selected) {
               if (selected != null) {
@@ -570,7 +646,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
             Expanded(
               child: TextFormField(
                 controller: _packageSizeController,
-                enabled: !_isSaving,
+                enabled: !_isSaving && !_isLookupOpen,
                 keyboardType: const TextInputType.numberWithOptions(
                   decimal: true,
                 ),
@@ -602,7 +678,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
                 value: _unit,
                 options: _units,
                 onChanged: (value) {
-                  setState(() => _unit = value);
+                  setState(() {
+                    _unit = value;
+                  });
                 },
               ),
             ),
@@ -611,7 +689,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
         const SizedBox(height: 16),
         TextFormField(
           controller: _packageCountController,
-          enabled: !_isSaving,
+          enabled: !_isSaving && !_isLookupOpen,
           keyboardType: TextInputType.number,
           decoration: const InputDecoration(
             labelText: 'Liczba opakowań',
@@ -634,6 +712,10 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isInitialEntryPending) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
     final catalogProduct = _catalogProduct;
 
     return PopScope(
@@ -673,7 +755,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
                     const SizedBox(height: 20),
                     TextFormField(
                       controller: _nameController,
-                      enabled: !_isSaving,
+                      enabled: !_isSaving && !_isLookupOpen,
                       maxLength: 120,
                       textCapitalization: TextCapitalization.sentences,
                       decoration: const InputDecoration(
@@ -707,28 +789,44 @@ class _AddProductScreenState extends State<AddProductScreen> {
                         setState(() {
                           _category = value;
                           _categoryWasSelectedManually = true;
+                          _suggestStorageLocation();
                         });
                       },
                     ),
                     const SizedBox(height: 20),
                     _dropdown(
+                      fieldKey: ValueKey('storage-location-$_storageLocation'),
                       label: 'Miejsce przechowywania',
                       value: _storageLocation,
                       options: _locations,
                       onChanged: (value) {
-                        setState(() => _storageLocation = value);
+                        setState(() {
+                          _storageLocation = value;
+                          _storageLocationWasSelectedManually = true;
+                        });
                       },
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _storageLocationWasSelectedManually
+                          ? 'Zachowamy miejsce wybrane przez Ciebie.'
+                          : 'Miejsce może być podpowiedziane na podstawie kategorii. '
+                                'Sprawdź zalecenia na opakowaniu.',
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
                     const SizedBox(height: 20),
                     OutlinedButton.icon(
-                      onPressed: _isSaving ? null : _chooseDate,
+                      onPressed: _isSaving || _isLookupOpen
+                          ? null
+                          : _chooseDate,
                       icon: const Icon(Icons.calendar_month_outlined),
                       label: Padding(
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         child: Text(
                           _expirationDate == null
                               ? 'Wybierz termin ważności'
-                              : 'Termin: ${_formatDate(_expirationDate!)}',
+                              : 'Termin: '
+                                    '${_formatDate(_expirationDate!)}',
                         ),
                       ),
                     ),
@@ -743,7 +841,9 @@ class _AddProductScreenState extends State<AddProductScreen> {
                     ],
                     const SizedBox(height: 28),
                     FilledButton.icon(
-                      onPressed: _isSaving ? null : _saveProduct,
+                      onPressed: _isSaving || _isLookupOpen
+                          ? null
+                          : _saveProduct,
                       icon: _isSaving
                           ? const SizedBox(
                               width: 20,
