@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'add_product_screen.dart';
 import 'pantry_screen.dart';
+import 'profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final String householdId;
@@ -101,9 +102,16 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: _showComingSoon,
           ),
           IconButton(
-            tooltip: 'Profil — w przygotowaniu',
+            tooltip: 'Profil',
             icon: const Icon(Icons.person_outline),
-            onPressed: _showComingSoon,
+            onPressed: () {
+              Navigator.of(context).push<void>(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      ProfileScreen(householdId: widget.householdId),
+                ),
+              );
+            },
           ),
         ],
       ),
@@ -146,6 +154,7 @@ class _HomeScreenState extends State<HomeScreen> {
             if (date == null) return false;
 
             final days = _daysUntil(date);
+
             return days >= 0 && days <= 3;
           }).toList();
 
@@ -491,7 +500,7 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(width: 12),
         Expanded(
           child: OutlinedButton.icon(
-            onPressed: _showComingSoon,
+            onPressed: () => _openPantry(),
             icon: const Icon(Icons.edit_outlined),
             label: const Text('Usuń / Edytuj'),
           ),

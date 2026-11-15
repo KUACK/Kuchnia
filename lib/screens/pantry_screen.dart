@@ -308,7 +308,7 @@ class _PantryScreenState extends State<PantryScreen> {
           return ListView.separated(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 110),
             itemCount: products.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 8),
+            separatorBuilder: (_, _) => const SizedBox(height: 8),
             itemBuilder: (context, index) {
               return _buildProduct(products[index]);
             },

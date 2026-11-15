@@ -22,7 +22,10 @@ class _EditProductScreenState extends State<EditProductScreen> {
 
   late final TextEditingController _nameController;
   late final TextEditingController _quantityController;
+  late final TextEditingController _packageSizeController;
+  late final TextEditingController _packageCountController;
 
+  late final bool _hasPackaging;
   late String _category;
   late String _unit;
   late String _storageLocation;
@@ -43,7 +46,6 @@ class _EditProductScreenState extends State<EditProductScreen> {
   ];
 
   static const _units = ['szt.', 'g', 'kg', 'ml', 'l'];
-
   static const _locations = ['Lodówka', 'Zamrażarka', 'Szafka', 'Inne'];
 
   DocumentReference<Map<String, dynamic>> get _productRef {
@@ -60,19 +62,23 @@ class _EditProductScreenState extends State<EditProductScreen> {
 
     final data = widget.initialData;
 
+    _hasPackaging =
+        data.containsKey('packageSize') && data.containsKey('packageCount');
+
     _nameController = TextEditingController(
       text: data['productName'] is String ? data['productName'] as String : '',
     );
 
-    final quantity = data['quantity'];
-
     _quantityController = TextEditingController(
-      text: quantity is num
-          ? quantity
-                .toString()
-                .replaceFirst(RegExp(r'\.0$'), '')
-                .replaceAll('.', ',')
-          : '',
+      text: _numberText(data['quantity']),
+    );
+
+    _packageSizeController = TextEditingController(
+      text: _numberText(data['packageSize']),
+    );
+
+    _packageCountController = TextEditingController(
+      text: _numberText(data['packageCount']),
     );
 
     _category = _categories.contains(data['category'])
@@ -101,11 +107,71 @@ class _EditProductScreenState extends State<EditProductScreen> {
   void dispose() {
     _nameController.dispose();
     _quantityController.dispose();
+    _packageSizeController.dispose();
+    _packageCountController.dispose();
     super.dispose();
   }
 
-  double? _parseQuantity(String? value) {
+  String _numberText(dynamic value) {
+    if (value is! num) return '';
+
+    return value
+        .toString()
+        .replaceFirst(RegExp(r'\.0$'), '')
+        .replaceAll('.', ',');
+  }
+
+  double? _parseNumber(String? value) {
     return double.tryParse((value ?? '').trim().replaceAll(',', '.'));
+  }
+
+  int? _parsePackageCount(String? value) {
+    final text = (value ?? '').trim();
+
+    if (!RegExp(r'^[0-9]+$').hasMatch(text)) return null;
+
+    return int.tryParse(text);
+  }
+
+  String? _validateAmount(String? value) {
+    final amount = _parseNumber(value);
+
+    if (amount == null || !amount.isFinite || amount <= 0 || amount > 1000000) {
+      return 'Podaj wartość większą od 0, maks. 1 mln.';
+    }
+
+    return null;
+  }
+
+  String? _validatePackageCount(String? value) {
+    final count = _parsePackageCount(value);
+
+    if (count == null || count < 1 || count > 1000000) {
+      return 'Podaj całkowitą liczbę od 1 do 1 mln.';
+    }
+
+    return null;
+  }
+
+  double? get _totalQuantity {
+    if (!_hasPackaging) {
+      return _parseNumber(_quantityController.text);
+    }
+
+    final size = _parseNumber(_packageSizeController.text);
+    final count = _parsePackageCount(_packageCountController.text);
+
+    if (size == null ||
+        !size.isFinite ||
+        size <= 0 ||
+        count == null ||
+        count < 1) {
+      return null;
+    }
+
+    final total = size * count;
+
+    return total.isFinite ? total : null;
   }
 
   String _formatDate(DateTime date) {
@@ -174,6 +240,17 @@ class _EditProductScreenState extends State<EditProductScreen> {
       return;
     }
 
+    final total = _totalQuantity;
+
+    if (total == null || !total.isFinite || total <= 0 || total > 1000000) {
+      setState(() {
+        _errorMessage =
+            'Łączna ilość musi być większa od 0 '
+            'i nie może przekraczać 1 mln wybranych jednostek.';
+      });
+      return;
+    }
+
     FocusScope.of(context).unfocus();
 
     setState(() {
@@ -184,9 +261,9 @@ class _EditProductScreenState extends State<EditProductScreen> {
     try {
       final date = _expirationDate!;
 
-      await _productRef.update({
+      final changes = <String, dynamic>{
         'productName': _nameController.text.trim(),
-        'quantity': _parseQuantity(_quantityController.text)!,
+        'quantity': total,
         'unit': _unit,
         'category': _category,
         'storageLocation': _storageLocation,
@@ -194,7 +271,16 @@ class _EditProductScreenState extends State<EditProductScreen> {
           DateTime(date.year, date.month, date.day),
         ),
         'updatedAt': FieldValue.serverTimestamp(),
-      });
+      };
+
+      if (_hasPackaging) {
+        changes['packageSize'] = _parseNumber(_packageSizeController.text)!;
+        changes['packageCount'] = _parsePackageCount(
+          _packageCountController.text,
+        )!;
+      }
+
+      await _productRef.update(changes);
     } on FirebaseException catch (error) {
       if (!mounted) return;
 
@@ -315,7 +401,7 @@ class _EditProductScreenState extends State<EditProductScreen> {
         border: const OutlineInputBorder(),
       ),
       items: options.map((option) {
-        return DropdownMenuItem(value: option, child: Text(option));
+        return DropdownMenuItem<String>(value: option, child: Text(option));
       }).toList(),
       onChanged: _isBusy
           ? null
@@ -324,6 +410,78 @@ class _EditProductScreenState extends State<EditProductScreen> {
                 onChanged(selected);
               }
             },
+    );
+  }
+
+  Widget _buildQuantityFields() {
+    final total = _totalQuantity;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (!_hasPackaging) ...[
+          const Text(
+            'Ten wpis pochodzi ze starszego formularza. '
+            'Edytujesz ilość łączną — nie zakładamy liczby '
+            'ani wielkości opakowań.',
+          ),
+          const SizedBox(height: 12),
+        ],
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: _hasPackaging
+                    ? _packageSizeController
+                    : _quantityController,
+                enabled: !_isBusy,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(
+                  labelText: _hasPackaging ? 'Wielkość opakowania' : 'Ilość',
+                  border: const OutlineInputBorder(),
+                ),
+                validator: _validateAmount,
+                onChanged: (_) => setState(() {}),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _dropdown(
+                label: 'Jednostka',
+                value: _unit,
+                options: _units,
+                onChanged: (value) {
+                  setState(() => _unit = value);
+                },
+              ),
+            ),
+          ],
+        ),
+        if (_hasPackaging) ...[
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _packageCountController,
+            enabled: !_isBusy,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Liczba opakowań',
+              helperText: 'Całkowita liczba, np. 1, 2 lub 3.',
+              border: OutlineInputBorder(),
+            ),
+            validator: _validatePackageCount,
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            total == null
+                ? 'Łącznie: —'
+                : 'Łącznie: ${_numberText(total)} $_unit',
+          ),
+        ],
+      ],
     );
   }
 
@@ -366,59 +524,14 @@ class _EditProductScreenState extends State<EditProductScreen> {
                       },
                     ),
                     const SizedBox(height: 16),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: TextFormField(
-                            controller: _quantityController,
-                            enabled: !_isBusy,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
-                            ),
-                            decoration: const InputDecoration(
-                              labelText: 'Ilość',
-                              border: OutlineInputBorder(),
-                            ),
-                            validator: (value) {
-                              final quantity = _parseQuantity(value);
-
-                              if (quantity == null ||
-                                  !quantity.isFinite ||
-                                  quantity <= 0 ||
-                                  quantity > 1000000) {
-                                return 'Podaj liczbę większą od 0 '
-                                    'i nie większą niż 1 mln.';
-                              }
-
-                              return null;
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _dropdown(
-                            label: 'Jednostka',
-                            value: _unit,
-                            options: _units,
-                            onChanged: (value) {
-                              setState(() {
-                                _unit = value;
-                              });
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
+                    _buildQuantityFields(),
                     const SizedBox(height: 20),
                     _dropdown(
                       label: 'Kategoria',
                       value: _category,
                       options: _categories,
                       onChanged: (value) {
-                        setState(() {
-                          _category = value;
-                        });
+                        setState(() => _category = value);
                       },
                     ),
                     const SizedBox(height: 20),
@@ -427,9 +540,7 @@ class _EditProductScreenState extends State<EditProductScreen> {
                       value: _storageLocation,
                       options: _locations,
                       onChanged: (value) {
-                        setState(() {
-                          _storageLocation = value;
-                        });
+                        setState(() => _storageLocation = value);
                       },
                     ),
                     const SizedBox(height: 20),
