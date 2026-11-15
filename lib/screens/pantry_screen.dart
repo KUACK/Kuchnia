@@ -1,10 +1,11 @@
 import 'dart:async';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import 'add_product_screen.dart';
-import 'edit_product_screen.dart';
+import 'product_details_screen.dart';
 
 class PantryScreen extends StatefulWidget {
   final String householdId;
@@ -22,7 +23,6 @@ class PantryScreen extends StatefulWidget {
 
 class _PantryScreenState extends State<PantryScreen> {
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _productsStream;
-
   Timer? _dateTimer;
 
   @override
@@ -62,44 +62,29 @@ class _PantryScreenState extends State<PantryScreen> {
     );
   }
 
-  Future<void> _openEditProduct(
+  Future<void> _openDetails(
     QueryDocumentSnapshot<Map<String, dynamic>> document,
   ) async {
     final result = await Navigator.of(context).push<String>(
       MaterialPageRoute<String>(
-        builder: (_) => EditProductScreen(
+        builder: (_) => ProductDetailsScreen(
           householdId: widget.householdId,
           productId: document.id,
-          initialData: document.data(),
         ),
       ),
     );
 
-    if (!mounted || result == null) return;
+    if (!mounted || result != 'deleted') return;
 
-    final String message;
-
-    if (result == 'deleted') {
-      message = 'Produkt został usunięty ze spiżarni.';
-    } else if (result == 'updated') {
-      message = 'Zmiany produktu zostały zapisane.';
-    } else {
-      return;
-    }
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Produkt został usunięty ze spiżarni.')),
+    );
   }
 
   DateTime? _expirationDate(Map<String, dynamic> data) {
     final value = data['expirationDate'];
 
-    if (value is Timestamp) {
-      return value.toDate();
-    }
-
-    return null;
+    return value is Timestamp ? value.toDate() : null;
   }
 
   String _formatDate(DateTime date) {
@@ -130,7 +115,6 @@ class _PantryScreenState extends State<PantryScreen> {
     final now = DateTime.now();
 
     final today = DateTime.utc(now.year, now.month, now.day);
-
     final expiry = DateTime.utc(date.year, date.month, date.day);
 
     return expiry.difference(today).inDays;
@@ -162,49 +146,95 @@ class _PantryScreenState extends State<PantryScreen> {
     };
   }
 
-  IconData _locationIcon(String location) {
-    return switch (location) {
-      'Lodówka' => Icons.kitchen_outlined,
-      'Zamrażarka' => Icons.ac_unit,
-      'Szafka' => Icons.shelves,
-      _ => Icons.place_outlined,
-    };
-  }
-
-  String? _packagingLabel(Map<String, dynamic> data, String unit) {
+  String _quantityLabel(Map<String, dynamic> data) {
+    final unit = _text(data['unit'], '');
     final size = data['packageSize'];
     final count = data['packageCount'];
 
-    if (size is! num ||
-        count is! num ||
-        !size.isFinite ||
-        !count.isFinite ||
-        size <= 0 ||
-        count <= 0 ||
-        count % 1 != 0) {
+    final hasPackaging =
+        size is num &&
+        count is num &&
+        size.isFinite &&
+        count.isFinite &&
+        size > 0 &&
+        count > 0 &&
+        count % 1 == 0;
+
+    if (hasPackaging) {
+      return '${_formatQuantity(count)} × '
+          '${_formatQuantity(size)} $unit';
+    }
+
+    return '${_formatQuantity(data['quantity'])} $unit'.trim();
+  }
+
+  String? _imageUrl(Map<String, dynamic> data) {
+    if (data['imageSource'] != 'open_food_facts') return null;
+
+    final value = data['imageUrl'];
+    if (value is! String) return null;
+
+    final url = value.trim();
+    final uri = Uri.tryParse(url);
+
+    if (url.length > 2048 ||
+        uri == null ||
+        uri.scheme != 'https' ||
+        uri.host != 'images.openfoodfacts.org' ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasPort ||
+        uri.hasQuery ||
+        uri.hasFragment ||
+        !uri.path.startsWith('/images/products/')) {
       return null;
     }
 
-    return '${_formatQuantity(count)} × '
-        '${_formatQuantity(size)} $unit';
+    return url;
   }
 
-  Widget _buildCategoryThumbnail(String category) {
+  Widget _categoryPlaceholder(String category) {
     final color = _categoryColor(category);
 
-    return Container(
-      width: 68,
-      height: 68,
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(18),
+    return ColoredBox(
+      color: color.withValues(alpha: 0.12),
+      child: Center(
+        child: Icon(_categoryIcon(category), color: color, size: 34),
       ),
-      alignment: Alignment.center,
-      child: Icon(_categoryIcon(category), size: 34, color: color),
     );
   }
 
-  Widget _buildExpiryBadge(DateTime? date) {
+  Widget _buildThumbnail(Map<String, dynamic> data, String category) {
+    final imageUrl = _imageUrl(data);
+
+    return SizedBox.square(
+      dimension: 76,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: imageUrl == null
+            ? _categoryPlaceholder(category)
+            : ColoredBox(
+                color: Colors.white,
+                child: CachedNetworkImage(
+                  imageUrl: imageUrl,
+                  fit: BoxFit.contain,
+                  httpHeaders: const {
+                    'User-Agent':
+                        'KuchniaPlus/1.0.0 '
+                        '(Android; grzegorzloban@gmail.com)',
+                  },
+                  placeholder: (context, url) {
+                    return _categoryPlaceholder(category);
+                  },
+                  errorWidget: (context, url, error) {
+                    return _categoryPlaceholder(category);
+                  },
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _buildExpiry(DateTime? date) {
     final colors = Theme.of(context).colorScheme;
 
     Color color = colors.onSurfaceVariant;
@@ -267,14 +297,8 @@ class _PantryScreenState extends State<PantryScreen> {
     final colors = Theme.of(context).colorScheme;
 
     final name = _text(data['productName'], 'Produkt bez nazwy');
-
-    final quantity = _formatQuantity(data['quantity']);
-    final unit = _text(data['unit'], '');
     final category = _text(data['category'], 'Inne');
-    final location = _text(data['storageLocation'], 'Nie podano');
-
     final date = _expirationDate(data);
-    final packaging = _packagingLabel(data, unit);
 
     return Card(
       margin: EdgeInsets.zero,
@@ -286,7 +310,7 @@ class _PantryScreenState extends State<PantryScreen> {
       ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () => _openEditProduct(document),
+        onTap: () => _openDetails(document),
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -295,7 +319,7 @@ class _PantryScreenState extends State<PantryScreen> {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildCategoryThumbnail(category),
+                  _buildThumbnail(data, category),
                   const SizedBox(width: 14),
                   Expanded(
                     child: Column(
@@ -306,28 +330,10 @@ class _PantryScreenState extends State<PantryScreen> {
                           style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(fontWeight: FontWeight.w600),
                         ),
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 8),
                         Text(
-                          packaging ?? '$quantity $unit',
+                          _quantityLabel(data),
                           style: Theme.of(context).textTheme.bodyMedium,
-                        ),
-                        if (packaging != null) ...[
-                          const SizedBox(height: 2),
-                          Text(
-                            'Łącznie: $quantity $unit',
-                            style: TextStyle(
-                              color: colors.onSurfaceVariant,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 6),
-                        Text(
-                          category,
-                          style: TextStyle(
-                            color: colors.onSurfaceVariant,
-                            fontSize: 12,
-                          ),
                         ),
                       ],
                     ),
@@ -341,36 +347,22 @@ class _PantryScreenState extends State<PantryScreen> {
                 ],
               ),
               const SizedBox(height: 14),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  Icon(
-                    _locationIcon(location),
-                    size: 17,
-                    color: colors.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      location,
+                  _buildExpiry(date),
+                  if (date != null)
+                    Text(
+                      _formatDate(date),
                       style: TextStyle(
                         color: colors.onSurfaceVariant,
                         fontSize: 12,
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    date == null ? 'Brak daty' : _formatDate(date),
-                    style: TextStyle(
-                      color: colors.onSurfaceVariant,
-                      fontSize: 12,
-                    ),
-                  ),
                 ],
               ),
-              const SizedBox(height: 12),
-              _buildExpiryBadge(date),
             ],
           ),
         ),
@@ -457,7 +449,6 @@ class _PantryScreenState extends State<PantryScreen> {
               final data = document.data();
 
               if (data['status'] != 'active') return false;
-
               if (!widget.onlyExpired) return true;
 
               final date = _expirationDate(data);

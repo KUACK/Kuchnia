@@ -472,7 +472,8 @@ class _AddProductScreenState extends State<AddProductScreen> {
             const Text(
               'Źródło: Open Food Facts. Dane: ODbL. '
               'Zdjęcia: CC BY-SA. Dane mogą być niepełne lub błędne. '
-              'Zdjęcie i karta podglądu nie są zapisywane w spiżarni.',
+              'Adres dostępnego zdjęcia i jego źródło mogą zostać '
+              'zapisane przy produkcie. Sam plik zdjęcia nie trafia do Firestore.',
               style: TextStyle(fontSize: 12),
             ),
           ],
@@ -513,7 +514,6 @@ class _AddProductScreenState extends State<AddProductScreen> {
             ? 'Wybierz termin ważności produktu.'
             : 'Popraw zaznaczone pola.';
       });
-
       return;
     }
 
@@ -525,7 +525,6 @@ class _AddProductScreenState extends State<AddProductScreen> {
             'Łączna ilość musi być większa od 0 '
             'i nie może przekraczać 1 mln wybranych jednostek.';
       });
-
       return;
     }
 
@@ -535,7 +534,6 @@ class _AddProductScreenState extends State<AddProductScreen> {
       setState(() {
         _errorMessage = 'Sesja wygasła. Zaloguj się ponownie.';
       });
-
       return;
     }
 
@@ -549,27 +547,67 @@ class _AddProductScreenState extends State<AddProductScreen> {
     try {
       final date = _expirationDate!;
 
+      final data = <String, dynamic>{
+        'productName': _nameController.text.trim(),
+        'category': _category,
+        'packageSize': _parseNumber(_packageSizeController.text)!,
+        'packageCount': _parsePackageCount(_packageCountController.text)!,
+        'quantity': total,
+        'unit': _unit,
+        'storageLocation': _storageLocation,
+        'expirationDate': Timestamp.fromDate(
+          DateTime(date.year, date.month, date.day),
+        ),
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'createdBy': user.uid,
+        'source': 'manual',
+        'status': 'active',
+      };
+
+      final catalogProduct = _catalogProduct;
+
+      if (catalogProduct != null) {
+        final imageUrl = catalogProduct.imageUrl?.trim();
+        final barcode = catalogProduct.barcode.trim();
+
+        final validBarcode = RegExp(
+          r'^(?:[0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14})$',
+        ).hasMatch(barcode);
+
+        final validImageUrl =
+            imageUrl != null &&
+            imageUrl.length <= 2048 &&
+            RegExp(
+              r'^https://images[.]openfoodfacts[.]org/images/products/[^?#]+$',
+            ).hasMatch(imageUrl);
+
+        final imageUri = imageUrl == null ? null : Uri.tryParse(imageUrl);
+
+        final validImageHost =
+            imageUri != null &&
+            imageUri.scheme == 'https' &&
+            imageUri.host == 'images.openfoodfacts.org' &&
+            imageUri.userInfo.isEmpty &&
+            !imageUri.hasPort &&
+            !imageUri.hasQuery &&
+            !imageUri.hasFragment;
+
+        if (validBarcode && validImageUrl && validImageHost) {
+          data.addAll({
+            'imageUrl': imageUrl,
+            'imageSource': 'open_food_facts',
+            'imageSourceUrl':
+                'https://world.openfoodfacts.org/product/$barcode',
+          });
+        }
+      }
+
       await FirebaseFirestore.instance
           .collection('households')
           .doc(widget.householdId)
           .collection('pantry_items')
-          .add({
-            'productName': _nameController.text.trim(),
-            'category': _category,
-            'packageSize': _parseNumber(_packageSizeController.text)!,
-            'packageCount': _parsePackageCount(_packageCountController.text)!,
-            'quantity': total,
-            'unit': _unit,
-            'storageLocation': _storageLocation,
-            'expirationDate': Timestamp.fromDate(
-              DateTime(date.year, date.month, date.day),
-            ),
-            'createdAt': FieldValue.serverTimestamp(),
-            'updatedAt': FieldValue.serverTimestamp(),
-            'createdBy': user.uid,
-            'source': 'manual',
-            'status': 'active',
-          });
+          .add(data);
 
       if (!mounted) return;
 
@@ -581,16 +619,15 @@ class _AddProductScreenState extends State<AddProductScreen> {
         switch (error.code) {
           case 'permission-denied':
             _errorMessage =
-                'Brak uprawnień do zapisu. Sprawdź reguły Firestore '
-                'dla opakowań i przypisanie do domu.';
+                'Brak uprawnień do zapisu. Sprawdź aktualne reguły '
+                'Firestore i przypisanie do domu.';
             break;
           case 'unavailable':
             _errorMessage = 'Baza jest chwilowo niedostępna. Sprawdź internet.';
             break;
           default:
             _errorMessage =
-                'Nie udało się zapisać produktu. '
-                'Kod: ${error.code}';
+                'Nie udało się zapisać produktu. Kod: ${error.code}';
         }
       });
     } catch (_) {
