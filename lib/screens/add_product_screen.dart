@@ -7,6 +7,7 @@ import '../widgets/expiration_date_field.dart';
 import '../models/package_size.dart';
 import '../services/open_food_facts_service.dart';
 import 'product_entry_screen.dart';
+import 'expiration_date_scan_screen.dart';
 
 class AddProductScreen extends StatefulWidget {
   final String householdId;
@@ -327,11 +328,32 @@ class _AddProductScreenState extends State<AddProductScreen> {
     );
   }
 
+  Future<void> _scanExpirationDate() async {
+    if (_isSaving || _isLookupOpen) return;
+
+    FocusScope.of(context).unfocus();
+
+    final scanned = await Navigator.of(context).push<DateTime>(
+      MaterialPageRoute<DateTime>(
+        builder: (_) => const ExpirationDateScanScreen(),
+      ),
+    );
+
+    if (!mounted || scanned == null) return;
+
+    setState(() {
+      _expirationDate = scanned;
+      _withoutExpirationDate = false;
+      _errorMessage = null;
+    });
+  }
+
   Widget _buildExpirationDateField() {
     return ExpirationDateField(
       date: _expirationDate,
       withoutExpirationDate: _withoutExpirationDate,
       enabled: !(_isSaving || _isLookupOpen),
+      onScanRequested: _scanExpirationDate,
       onDateSelected: (date) {
         if (!mounted || _isSaving || _isLookupOpen) return;
         setState(() {

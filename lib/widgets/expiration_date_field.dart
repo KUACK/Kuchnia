@@ -6,6 +6,7 @@ class ExpirationDateField extends StatelessWidget {
   final bool enabled;
   final ValueChanged<DateTime> onDateSelected;
   final VoidCallback onWithoutExpirationDate;
+  final VoidCallback? onScanRequested;
 
   const ExpirationDateField({
     super.key,
@@ -14,6 +15,7 @@ class ExpirationDateField extends StatelessWidget {
     required this.enabled,
     required this.onDateSelected,
     required this.onWithoutExpirationDate,
+    this.onScanRequested,
   });
 
   String _formatDate(DateTime value) {
@@ -102,6 +104,17 @@ class ExpirationDateField extends StatelessWidget {
             child: Text('Wybierz konkretną datę'),
           ),
         ),
+        if (onScanRequested != null) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: enabled ? onScanRequested : null,
+            icon: const Icon(Icons.document_scanner_outlined),
+            label: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text('Odczytaj datę aparatem'),
+            ),
+          ),
+        ],
         if (selectionText != null) ...[
           const SizedBox(height: 8),
           Text(selectionText),
